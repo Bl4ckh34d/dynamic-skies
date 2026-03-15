@@ -20,6 +20,7 @@
         _NightEndHeight("Night End Height", Range(-1, 1)) = -.2
         _SkyFadeStart("Sky Fade Start", Range(-1, 1)) = .05
         _SkyFadeEnd("Sky End Start", Range(-1, 1)) = -.01
+        _DeepNightDarkness("Deep Night Darkness", Range(0, 1)) = 0.85
         _stepSize("Reduce Color Step Size", Range(0, 1)) = .01
 
         _FogColor("Fog Color", Color) = (1,1,1,1)  // Define the property
@@ -67,6 +68,8 @@
         _CloudSunScale("Cloud Sun Scale", float) = 0.125
         _CloudSunLerpScale("Cloud Sun Lerp Scale", Range(0, 1)) = 0.5
         _CloudSunColor("Cloud Sun Color", COLOR) = (0.9647059,0.9803922,0.8039216)
+        _MoonCloudLightScale("Moon Cloud Light Scale", Range(0, 1)) = 0.08
+        _MoonCloudColor("Moon Cloud Color", COLOR) = (0.35, 0.42, 0.60, 1)
 
         [Header (Stars)]
         _StarTex("Star Tex", 2D) = "black" {}
@@ -147,6 +150,7 @@
             uniform half _AtmosphereThickness;
             uniform half _NightStartHeight, _NightEndHeight;
             uniform half _SkyFadeStart, _SkyFadeEnd;
+            uniform half _DeepNightDarkness;
             uniform half _stepSize;
 
             uniform float3 _FogColor;
@@ -180,6 +184,8 @@
             uniform float _CloudDirection, _CloudBlendScale, _CloudBlendLB, _CloudBlendUB, _CloudNormalSpeed;
             uniform float _CloudSunScale, _CloudSunLerpScale;
             uniform float3 _CloudSunColor;
+            uniform float _MoonCloudLightScale;
+            uniform float4 _MoonCloudColor;
 
             uniform sampler2D _StarTex, _StarTwinkleTex, _TwinkleTex;
             uniform float4 _StarTex_ST, _StarTwinkleTex_ST, _TwinkleTex_ST;
@@ -451,6 +457,19 @@
                 float night_clamp = clamp(night, 0.0, 0.5); //carademono: will use this for the reduce colors lerp
                 float day = saturate(Remap(sunDotUp, float2(_NightEndHeight, _NightStartHeight), float2(0, 1)));
                 float day_clamp = clamp(day, 0.0, 0.6);
+                const float duskSeconds = 18.0 * 3600.0;
+                const float dawnSeconds = 6.0 * 3600.0;
+                const float twilightDuration = 3.0 * 3600.0;
+                float twilightDarkness = 0.0;
+                if (_WorldTime >= duskSeconds && _WorldTime < duskSeconds + twilightDuration)
+                    twilightDarkness = saturate((_WorldTime - duskSeconds) / twilightDuration);
+                else if (_WorldTime >= dawnSeconds - twilightDuration && _WorldTime < dawnSeconds)
+                    twilightDarkness = saturate((dawnSeconds - _WorldTime) / twilightDuration);
+                else if (_WorldTime >= duskSeconds + twilightDuration || _WorldTime < dawnSeconds - twilightDuration)
+                    twilightDarkness = 1.0;
+                float deepestNight = saturate((twilightDarkness - 0.6666667) * 3.0);
+                float sunVisibility = smoothstep(0.0, 1.0, day) * (1.0 - twilightDarkness);
+                float nightCloudDarkness = 1.0 - (twilightDarkness * 0.55);
 
                 //Get the moon positions
                 //Moon
@@ -523,6 +542,14 @@
                 float SecundaNDotL = dot(sunPos, SecundaMoonFragNormal);
 
 #endif
+                float masserPhaseStrength = saturate((cos(radians(_MoonPhase.x)) + 1.0) * 0.5);
+                float secundaPhaseStrength = saturate((cos(radians(_SecundaPhase.x)) + 1.0) * 0.5);
+                masserPhaseStrength = pow(masserPhaseStrength, 2.0);
+                secundaPhaseStrength = pow(secundaPhaseStrength, 2.0);
+                float masserMoonLight = saturate(currentMoonPos.y) * masserPhaseStrength;
+                float secundaMoonLight = saturate(SecundaCurrentMoonPos.y) * secundaPhaseStrength;
+                float moonLightStrength = saturate(masserMoonLight + secundaMoonLight);
+                float3 moonLightDir = normalize(currentMoonPos * masserMoonLight + SecundaCurrentMoonPos * secundaMoonLight + float3(0, 0.0001, 0));
 
                 float moonBlocking = max(sphere * saturate(NDotL), SecundaSphere * saturate(SecundaNDotL));
 
@@ -542,8 +569,33 @@
 
                     // if we did precalculate color in vprog: just do lerp between them
                     //col.rgb = lerp(IN.skyColor, IN.groundColor, saturate(y));
-                    float3 tmp = lerp(IN.fogColor, _FogNightColor, night);
-                    col.rgb = lerp(IN.skyColor, tmp, saturate(y));
+                    float3 civilSkyTarget = float3(0.025, 0.028, 0.060);
+                    float3 nauticalSkyTarget = float3(0.016, 0.019, 0.045);
+                    float3 astronomicalSkyTarget = float3(0.010, 0.013, 0.034);
+                    float3 darkestSkyTarget = float3(0.007, 0.010, 0.026);
+                    float3 civilFogTarget = float3(0.020, 0.022, 0.038);
+                    float3 nauticalFogTarget = float3(0.013, 0.015, 0.028);
+                    float3 astronomicalFogTarget = float3(0.008, 0.010, 0.019);
+                    float3 darkestFogTarget = float3(0.005, 0.006, 0.013);
+                    float3 nightSkyTarget = civilSkyTarget;
+                    float3 nightFogTarget = civilFogTarget;
+                    if (twilightDarkness < 0.3333333) {
+                        float t = twilightDarkness * 3.0;
+                        nightSkyTarget = lerp(civilSkyTarget, nauticalSkyTarget, t);
+                        nightFogTarget = lerp(civilFogTarget, nauticalFogTarget, t);
+                    } else if (twilightDarkness < 0.6666667) {
+                        float t = (twilightDarkness - 0.3333333) * 3.0;
+                        nightSkyTarget = lerp(nauticalSkyTarget, astronomicalSkyTarget, t);
+                        nightFogTarget = lerp(nauticalFogTarget, astronomicalFogTarget, t);
+                    } else {
+                        float t = (twilightDarkness - 0.6666667) * 3.0;
+                        nightSkyTarget = lerp(astronomicalSkyTarget, darkestSkyTarget, t);
+                        nightFogTarget = lerp(astronomicalFogTarget, darkestFogTarget, t);
+                    }
+                    float3 deepNightSky = lerp(IN.skyColor, nightSkyTarget, twilightDarkness);
+                    float3 deepNightFog = lerp(_FogNightColor, nightFogTarget, twilightDarkness);
+                    float3 tmp = lerp(IN.fogColor, deepNightFog, night);
+                    col.rgb = lerp(deepNightSky, tmp, saturate(y));
 
                 half sunAttenuation = 0;
                 #if SKYBOX_SUNDISK != SKYBOX_SUNDISK_NONE
@@ -564,6 +616,10 @@
     //Stars
 float2 starsUV = normWorldPos.xz / (normWorldPos.y + _StarBending);
 float3 stars = tex2D(_StarTex, starsUV * _StarTex_ST.xy + _StarTex_ST.zw).rgb;
+float3 starBackgroundDark = float3(0.0, 0.0, 39.0) / 255.0;
+float3 starBackgroundBright = float3(7.0, 1.0, 63.0) / 255.0;
+float3 starBackground = lerp(starBackgroundDark, starBackgroundBright, step(0.20, stars.b));
+stars = saturate((stars - starBackground) * 2.2);
 float starsAlpha = tex2D(_StarTwinkleTex, (starsUV * _StarTwinkleTex_ST.xy) + _StarTwinkleTex_ST.zw).r;
 
 // Invert the voronoi
@@ -584,14 +640,11 @@ twinkle *= _TwinkleBoost;
 stars.rgb -= twinkle;
 stars = saturate(stars);
 
-// Lerp to the stars color masking out the horizon
-col.rgb = lerp(col.rgb, stars, night * horizonValue);
-                
-                //if(moonBlocking > 0.0) {
-                    
-                //} else {
-                    col.rgb = lerp(col.rgb, stars, night * horizonValue);
-                //}
+                // Fade stars in later across twilight and keep deep-night intensity lower.
+                float starVisibility = pow(twilightDarkness, 1.85);
+                float starIntensity = lerp(0.22, 0.42, deepestNight);
+                float3 starComposite = 1.0 - ((1.0 - col.rgb) * (1.0 - saturate(stars * starIntensity)));
+                col.rgb = lerp(col.rgb, starComposite, starVisibility * horizonValue);
 
 
                 //End of Stars
@@ -668,29 +721,30 @@ col.rgb = lerp(col.rgb, stars, night * horizonValue);
 
                 //if our sphere tracing returned a positive value we have a moon fragment
                 float3 SecundaMoonTex;
-                float3 tmpCol = (0.0, 0.0, 0.0);
                 float NDotScale = 1;
+                float masserMoonBoost = lerp(1.05, 1.6, saturate((cos(radians(_MoonPhase.x)) + 1.0) * 0.5));
+                float secundaMoonBoost = lerp(1.05, 1.55, saturate((cos(radians(_SecundaPhase.x)) + 1.0) * 0.5));
+                float daylightMoonFade = smoothstep(0.15, 1.0, day);
+                float daylightMoonEmission = lerp(0.0, 0.65, daylightMoonFade);
 
                 //Stops the moons from being rendered underneath the horizon
                 if(normWorldPos.y > 0.0) {
                     if(SecundaSphere >= 0.0) {
                         SecundaMoonTex = tex2D(_SecundaTex, SecundaMoonUV).rgb * _SecundaColor.rgb;
-                        //SecundaMoonTex = lerp(SecundaMoonTex * saturate(SecundaNDotL), SecundaMoonTex, saturate(SecundaNDotL * NDotScale));
-        // Set the minimum color threshold (carademono: this is to blend moon into blue nighttime sky)
-        float3 minColor = float3(0, 0, 5) / 255.0;
-                        tmpCol = 0.95 * IN.skyColor.rgb;
-        tmpCol = max(tmpCol, minColor);  // Clamp to the minimum color
-                        SecundaMoonTex = lerp(tmpCol, SecundaMoonTex, max(0, saturate(SecundaNDotL * NDotScale) - 0));
-                        col.rgb = SecundaMoonTex;
+                        float secundaMoonLight = max(0, saturate(SecundaNDotL * NDotScale));
+                        float secundaMoonMask = smoothstep(0.02, 0.10, secundaMoonLight) * horizonValue * lerp(1.0, 0.45, daylightMoonFade);
+                        float3 secundaMoonLit = SecundaMoonTex * lerp(0.85, secundaMoonBoost, sqrt(secundaMoonLight));
+                        float3 secundaMoonDayComposite = 1.0 - ((1.0 - col.rgb) * (1.0 - saturate(secundaMoonLit * (0.55 + daylightMoonEmission))));
+                        float3 secundaMoonComposite = lerp(secundaMoonLit, secundaMoonDayComposite, daylightMoonFade);
+                        col.rgb = lerp(col.rgb, secundaMoonComposite, secundaMoonMask);
                     } else if(sphere >= 0.0) {
                         float3 moonTex = tex2D(_MoonTex, moonUV).rgb * _MoonColor.rgb;
-        // Set the minimum color threshold (carademono: this is to blend moon into blue nighttime sky)
-        float3 minColor = float3(0, 0, 5) / 255.0;
-                        tmpCol = 0.95 * IN.skyColor.rgb;
-        tmpCol = max(tmpCol, minColor);  // Clamp to the minimum color
-                        //moonTex = lerp(moonTex * saturate(NDotL), moonTex, saturate(NDotL * NDotScale));
-                        moonTex = lerp(tmpCol, moonTex, max(0, saturate(NDotL * NDotScale) - 0));
-                        col.rgb = moonTex;
+                        float moonLight = max(0, saturate(NDotL * NDotScale));
+                        float moonMask = smoothstep(0.02, 0.10, moonLight) * horizonValue * lerp(1.0, 0.45, daylightMoonFade);
+                        float3 moonLit = moonTex * lerp(0.85, masserMoonBoost, sqrt(moonLight));
+                        float3 moonDayComposite = 1.0 - ((1.0 - col.rgb) * (1.0 - saturate(moonLit * (0.55 + daylightMoonEmission))));
+                        float3 moonComposite = lerp(moonLit, moonDayComposite, daylightMoonFade);
+                        col.rgb = lerp(col.rgb, moonComposite, moonMask);
                     }
                 }
                 //End of moons
@@ -730,7 +784,7 @@ col.rgb = lerp(col.rgb, stars, night * horizonValue);
                 float NdotUpTop = dot(cloudTopNormal, float3(0, 1, 0));
 
                 //adjust the color for night
-                float3 cloudTopColor = lerp(_CloudTopColor, _CloudTopNightColor, night);
+                float3 cloudTopColor = lerp(_CloudTopColor, _CloudTopNightColor * nightCloudDarkness, night);
 
                 //then divide by the color boost to brighten the clouds
                 cloudTopColor = saturate(cloudTopColor / (1 - _CloudTopColorBoost));
@@ -752,7 +806,7 @@ col.rgb = lerp(col.rgb, stars, night * horizonValue);
                         //float cloudThickness = abs(1 - abs(cloudsTop / 2)) * (1 - night);
                             cloudThickness = cloudsTop * (1 - night); 
                             pos = saturate(1 + normSunWorldPos.y);
-                            cloudLerpValue = sqrt(lerpScale) * pos; // carademono: key line for sun color
+                            cloudLerpValue = sqrt(lerpScale) * pos * sunVisibility; // carademono: key line for sun color
                             //Unity's calculated sun color
                             cloudTopColor = lerp(cloudTopColor, (IN.sunColor + _CloudTopSunColor) * (_CloudTopSunScale * NdotUpTop), cloudLerpValue * _CloudTopSunLerpScale);
                         //Unity's defined sun color in Lighting Settings
@@ -765,6 +819,11 @@ col.rgb = lerp(col.rgb, stars, night * horizonValue);
 
                 //then remap the dot product to be between our desired value, this reduces the effect of the normal
                 cloudTopColor = cloudTopColor * NdotUpTop;
+                float topMoonMask = night * moonLightStrength;
+                topMoonMask *= pow(saturate(dot(normWorldPos, moonLightDir)), 6.0);
+                topMoonMask *= pow(saturate(dot(cloudTopNormal, moonLightDir)), 2.0);
+                topMoonMask *= saturate(dot(cloudTopNormal, float3(0, 1, 0)));
+                cloudTopColor += _MoonCloudColor.rgb * (_MoonCloudLightScale * topMoonMask);
 
                 //finally lerp to the cloud color base on the cloud value
                 col.rgb = lerp(col.rgb, cloudTopColor, cloudsTop * _CloudTopOpacity);
@@ -798,7 +857,7 @@ col.rgb = lerp(col.rgb, stars, night * horizonValue);
                 float NdotUp = dot(cloudNormal, float3(0, 1, 0));
                 NdotUp = Remap(NdotUp, float2(-1, 1), float2(1 -_CloudNormalEffect, 1));
                 //adjust the color for night
-                float3 cloudColor = lerp(_CloudColor, _CloudNightColor, night);
+                float3 cloudColor = lerp(_CloudColor, _CloudNightColor * nightCloudDarkness, night);
             
                 //then divide by the color boost to brighten the clouds
                 cloudColor = saturate(cloudColor / (1 - _CloudColorBoost));
@@ -815,7 +874,7 @@ col.rgb = lerp(col.rgb, stars, night * horizonValue);
                             //float cloudThickness = abs(1 - abs(cloudsTop / 2)) * (1 - night);
                             cloudThickness = clouds * (1 - night);
                             pos = saturate(1 - normSunWorldPos.y);
-                            cloudLerpValue = sqrt(sqrt(sqrt(lerpScale))) * pos; // carademono: fix for sunset clouds
+                            cloudLerpValue = sqrt(sqrt(sqrt(lerpScale))) * pos * sunVisibility; // carademono: fix for sunset clouds
                             //Unity's calculated sun color
                             cloudColor = lerp(cloudColor, (IN.sunColor + _CloudSunColor) * (_CloudSunScale * NdotUp), cloudLerpValue * _CloudSunLerpScale);
                             //Unity's defined sun color in Lighting Settings
@@ -828,6 +887,11 @@ col.rgb = lerp(col.rgb, stars, night * horizonValue);
 
                 //then remap the dot product to be between our desired value, this reduces the effect of the normal
                 cloudColor = cloudColor * NdotUp;
+                float bottomMoonMask = night * moonLightStrength;
+                bottomMoonMask *= pow(saturate(dot(normWorldPos, moonLightDir)), 4.0);
+                bottomMoonMask *= pow(saturate(dot(cloudNormal, moonLightDir)), 2.0);
+                bottomMoonMask *= saturate(dot(cloudNormal, float3(0, 1, 0)));
+                cloudColor += _MoonCloudColor.rgb * (_MoonCloudLightScale * 0.6 * bottomMoonMask);
 
                 //finally lerp to the cloud color base on the cloud value
                 col.rgb = lerp(col.rgb, cloudColor, clouds * _CloudOpacity);

@@ -40,6 +40,9 @@ public class BLBSkybox : MonoBehaviour
     private float originalTimeScale;    //Original time scale when game started (not used atm)
     private float currentTimeScale; //Keeps track of the current timescale to update speeds if it changes
     private bool forceWeatherUpdate = false;
+    private float currentMoonAmbientStrength = 0f;
+    private static readonly Color moonlessNightAmbient = new Color(0.14f, 0.145f, 0.16f, 1.0f);
+    private static readonly Color moonlitNightAmbient = new Color(0.22f, 0.225f, 0.245f, 1.0f);
     #endregion
 
     #region Material Settings
@@ -282,13 +285,20 @@ public void Update()
 
     //Force skybox flag to prevent Distant Terrain from overriding it again in it's Update function
     void LateUpdate() {
-        if(!GameManager.Instance.PlayerEnterExit.IsPlayerInside) {
+        bool exteriorSkyVisible = !GameManager.Instance.PlayerEnterExit.IsPlayerInside;
+        bool interiorSkyVisible = TransparentWindowsEnabled && !GameManager.Instance.PlayerEnterExit.IsPlayerInsideDungeon;
+
+        if (exteriorSkyVisible || interiorSkyVisible) {
+            UpdateContinuousSkyState();
+        }
+
+        if(exteriorSkyVisible) {
             if(playerCam.clearFlags != UnityEngine.CameraClearFlags.Skybox && stackedCam == null) {
                 playerCam.clearFlags = UnityEngine.CameraClearFlags.Skybox;
             } else if(stackedCam != null) {
                 stackedCam.clearFlags = UnityEngine.CameraClearFlags.Skybox;
             }
-        } else if(TransparentWindowsEnabled && !GameManager.Instance.PlayerEnterExit.IsPlayerInsideDungeon) {
+        } else if(interiorSkyVisible) {
             //Debug.Log("Dynamic Skies: Forcing skybox clear flags on cameras for interior");
             if(playerCam.clearFlags != UnityEngine.CameraClearFlags.Skybox && stackedCam == null) {
                 playerCam.clearFlags = UnityEngine.CameraClearFlags.Skybox;
@@ -334,6 +344,45 @@ public void Update()
         DaggerfallDateTime now = DaggerfallUnity.Instance.WorldTime.Now;
         float secondsToday = now.Hour * 3600 + now.Minute * 60 + now.Second;
         skyboxMat.SetFloat("_WorldTime", secondsToday);
+    }
+
+    private void UpdateContinuousSkyState() {
+        if (skyboxMat == null || worldTime == null) {
+            return;
+        }
+
+        UpdateWorldTime();
+        ChangeLunarPhases();
+        UpdateSunlightRotation();
+        UpdateNightAmbientLight();
+    }
+
+    private void UpdateSunlightRotation() {
+        if (dfSunlight == null) {
+            return;
+        }
+
+        SunlightManager sunlightManager = GameManager.Instance.SunlightManager;
+        if (sunlightManager == null) {
+            return;
+        }
+
+        float dawn = DaggerfallDateTime.DawnHour * DaggerfallDateTime.MinutesPerHour;
+        float dayRange = DaggerfallDateTime.DuskHour * DaggerfallDateTime.MinutesPerHour - dawn;
+        float minuteOfDay = worldTime.Now.Hour * 60f + worldTime.Now.Minute + worldTime.Now.Second / 60f;
+        float time = (minuteOfDay - dawn) / dayRange;
+        float xrot = 180f * time;
+
+        dfSunlight.transform.rotation = Quaternion.Euler(xrot, sunlightManager.Angle, 0);
+    }
+
+    private void UpdateNightAmbientLight() {
+        if (playerAmbientLight == null) {
+            return;
+        }
+
+        playerAmbientLight.ExteriorNightAmbientLight = Color.Lerp(moonlessNightAmbient, moonlitNightAmbient, currentMoonAmbientStrength);
+        playerAmbientLight.UpdateAmbientLight();
     }
     #endregion
 
@@ -706,15 +755,15 @@ public void Update()
 
         LunarPhases currentMasserPhase = worldTime.Now.MassarLunarPhase;
 
-        int totalSecondsInDay = 24 * 60 * 60;
-        int currentSecondOfDay = worldTime.Now.Hour * 3600 + worldTime.Now.Minute * 60 + (int)worldTime.Now.Second;
+        float totalSecondsInDay = 24 * 60 * 60;
+        float currentSecondOfDay = worldTime.Now.Hour * 3600f + worldTime.Now.Minute * 60f + worldTime.Now.Second;
 
         int currentPhaseLength = GetLunarPhaseLength(currentMasserPhase);
         int masserMoonRatio = (worldTime.Now.DayOfYear + worldTime.Now.Year * 12 * 30 + 3) % 32;
         int masserPhaseDayOffset = GetPhaseDayOffset(masserMoonRatio);
-        int totalSecondsInCurrentPhase = currentPhaseLength * totalSecondsInDay;
-        int masserPhaseOffsetInSeconds = masserPhaseDayOffset * totalSecondsInDay + currentSecondOfDay;
-        float masserPhaseProgress = (float)masserPhaseOffsetInSeconds / totalSecondsInCurrentPhase;
+        float totalSecondsInCurrentPhase = currentPhaseLength * totalSecondsInDay;
+        float masserPhaseOffsetInSeconds = masserPhaseDayOffset * totalSecondsInDay + currentSecondOfDay;
+        float masserPhaseProgress = masserPhaseOffsetInSeconds / totalSecondsInCurrentPhase;
 
         if (LunarPhaseStates.TryGetValue(currentMasserPhase, out LunarPhaseCoordinates masserCoords)) {
             LunarPhases nextMasserPhase = GetNextLunarPhase(currentMasserPhase);
@@ -728,9 +777,9 @@ public void Update()
         int currentSecundaPhaseLength = GetLunarPhaseLength(currentSecundaPhase);
         int secundaMoonRatio = (worldTime.Now.DayOfYear + worldTime.Now.Year * 12 * 30 - 1) % 32;
         int secundaPhaseDayOffset = GetPhaseDayOffset(secundaMoonRatio);
-        int totalSecundaSecondsInCurrentPhase = currentSecundaPhaseLength * totalSecondsInDay;
-        int secundaPhaseOffsetInSeconds = secundaPhaseDayOffset * totalSecondsInDay + currentSecondOfDay;
-        float secundaPhaseProgress = (float)secundaPhaseOffsetInSeconds / totalSecundaSecondsInCurrentPhase;
+        float totalSecundaSecondsInCurrentPhase = currentSecundaPhaseLength * totalSecondsInDay;
+        float secundaPhaseOffsetInSeconds = secundaPhaseDayOffset * totalSecondsInDay + currentSecondOfDay;
+        float secundaPhaseProgress = secundaPhaseOffsetInSeconds / totalSecundaSecondsInCurrentPhase;
 
         if (LunarPhaseStates.TryGetValue(currentSecundaPhase, out LunarPhaseCoordinates secundaCoords)) {
             LunarPhases nextSecundaPhase = GetNextLunarPhase(currentSecundaPhase);
@@ -826,7 +875,9 @@ public void Update()
     }
 
     void ApplyOrbitCalculations(LunarPhases currentMasserPhase, LunarPhases currentSecundaPhase, float masserPhaseProgress, float secundaPhaseProgress, float interpolatedMasserX, float interpolatedSecundaX) {
-        float orbitSpeed = 0.0000725f * currentTimeScale;
+        // _WorldTime is already expressed in game-time seconds, so applying TimeScale
+        // here again makes the moons orbit several times per night.
+        float orbitSpeed = 0.0000725f;
 
         float masserOrbitOffset = interpolatedMasserX + 180f;
         float secundaOrbitOffset = interpolatedSecundaX + 180f;
@@ -856,6 +907,52 @@ public void Update()
 
         UpdateShaderOrbitParameters(masserXAngle, masserYAngle, masserZAngle, orbitSpeed, masserOrbitOffset,
                                     secundaXAngle, secundaYAngle, secundaZAngle, orbitSpeed, secundaOrbitOffset);
+        currentMoonAmbientStrength = CalculateMoonAmbientStrength(
+            interpolatedMasserX,
+            new Vector3(masserXAngle, masserYAngle, masserZAngle),
+            orbitSpeed,
+            masserOrbitOffset,
+            interpolatedSecundaX,
+            new Vector3(secundaXAngle, secundaYAngle, secundaZAngle),
+            orbitSpeed,
+            secundaOrbitOffset);
+    }
+
+    private float CalculateMoonAmbientStrength(float masserPhaseAngle, Vector3 masserOrbitAngles, float masserOrbitSpeedValue, float masserOrbitOffset,
+        float secundaPhaseAngle, Vector3 secundaOrbitAngles, float secundaOrbitSpeedValue, float secundaOrbitOffset) {
+        float secondsToday = worldTime.Now.Hour * 3600f + worldTime.Now.Minute * 60f + worldTime.Now.Second;
+        float masserPhaseStrength = Mathf.Pow((Mathf.Cos(Mathf.Deg2Rad * masserPhaseAngle) + 1f) * 0.5f, 2f);
+        float secundaPhaseStrength = Mathf.Pow((Mathf.Cos(Mathf.Deg2Rad * secundaPhaseAngle) + 1f) * 0.5f, 2f);
+
+        Vector3 masserPosition = GetMoonOrbitPosition(masserOrbitAngles, new Vector2(1f, 1f), secondsToday * masserOrbitSpeedValue, masserOrbitOffset);
+        Vector3 secundaPosition = GetMoonOrbitPosition(secundaOrbitAngles, new Vector2(0.9f, 0.6f), secondsToday * secundaOrbitSpeedValue, secundaOrbitOffset);
+
+        float masserAmbient = Mathf.Max(0f, masserPosition.y) * masserPhaseStrength;
+        float secundaAmbient = Mathf.Max(0f, secundaPosition.y) * secundaPhaseStrength;
+
+        return Mathf.Clamp01(masserAmbient + secundaAmbient);
+    }
+
+    private Vector3 GetMoonOrbitPosition(Vector3 orbitAngles, Vector2 majorMinorAxis, float orbitAngle, float orbitOffset) {
+        Vector3 currentPos = GetEllipsePosition(majorMinorAxis, orbitAngle);
+        currentPos = Quaternion.Euler(orbitAngles) * currentPos;
+
+        Vector3 previousPos = GetEllipsePosition(majorMinorAxis, orbitAngle - 1f);
+        previousPos = Quaternion.Euler(orbitAngles) * previousPos;
+
+        Vector3 orbitUp = Vector3.Cross(currentPos, previousPos).normalized;
+        if (orbitUp.sqrMagnitude < 0.0001f) {
+            orbitUp = Vector3.up;
+        }
+
+        return Quaternion.AngleAxis(orbitOffset, orbitUp) * currentPos;
+    }
+
+    private Vector3 GetEllipsePosition(Vector2 majorMinorAxis, float orbitAngle) {
+        return new Vector3(
+            majorMinorAxis.x * Mathf.Cos(orbitAngle),
+            0f,
+            majorMinorAxis.y * Mathf.Sin(orbitAngle)).normalized;
     }
 
     void UpdateShaderOrbitParameters(float masserOrbitAngleX, float masserOrbitAngleY, float masserOrbitAngleZ, float masserOrbitSpeed, float masserOrbitOffset,
