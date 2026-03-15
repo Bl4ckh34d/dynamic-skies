@@ -41,6 +41,9 @@ public class BLBSkybox : MonoBehaviour
     private float currentTimeScale; //Keeps track of the current timescale to update speeds if it changes
     private bool forceWeatherUpdate = false;
     private float currentMoonAmbientStrength = 0f;
+    private Color currentMoonLightTint = Color.white;
+    private Color baseExteriorNoonAmbient = new Color(0.5882353f, 0.5882353f, 0.5882353f, 1.0f);
+    private Color baseSunlightColor = Color.white;
     private static readonly Color moonlessNightAmbient = new Color(0.14f, 0.145f, 0.16f, 1.0f);
     private static readonly Color moonlitNightAmbient = new Color(0.22f, 0.225f, 0.245f, 1.0f);
     #endregion
@@ -106,6 +109,12 @@ public class BLBSkybox : MonoBehaviour
         //Store a reference to the player camera
         Instance.playerCam = GameObject.FindGameObjectWithTag("MainCamera").GetComponent("Camera") as Camera;
         Instance.playerAmbientLight = GameObject.FindGameObjectWithTag("Player").GetComponent("PlayerAmbientLight") as PlayerAmbientLight;
+        if (Instance.dfSunlight != null) {
+            Instance.baseSunlightColor = Instance.dfSunlight.color;
+        }
+        if (Instance.playerAmbientLight != null) {
+            Instance.baseExteriorNoonAmbient = Instance.playerAmbientLight.ExteriorNoonAmbientLight;
+        }
         Instance.wm = GameManager.Instance.WeatherManager;
 
         Instance.SetLightCurve(); //Override default light curve for prolonged sunset / sunrise
@@ -368,12 +377,14 @@ public void Update()
         }
 
         float dawn = DaggerfallDateTime.DawnHour * DaggerfallDateTime.MinutesPerHour;
-        float dayRange = DaggerfallDateTime.DuskHour * DaggerfallDateTime.MinutesPerHour - dawn;
+        float dusk = DaggerfallDateTime.DuskHour * DaggerfallDateTime.MinutesPerHour;
+        float dayRange = dusk - dawn;
         float minuteOfDay = worldTime.Now.Hour * 60f + worldTime.Now.Minute + worldTime.Now.Second / 60f;
         float time = (minuteOfDay - dawn) / dayRange;
         float xrot = 180f * time;
 
         dfSunlight.transform.rotation = Quaternion.Euler(xrot, sunlightManager.Angle, 0);
+        UpdateExteriorDaylightTint(minuteOfDay, dawn, dusk);
     }
 
     private void UpdateNightAmbientLight() {
@@ -381,7 +392,26 @@ public void Update()
             return;
         }
 
-        playerAmbientLight.ExteriorNightAmbientLight = Color.Lerp(moonlessNightAmbient, moonlitNightAmbient, currentMoonAmbientStrength);
+        Color ambientMoonTint = Color.Lerp(Color.white, currentMoonLightTint, 0.75f);
+        Color moonlitAmbientColor = new Color(
+            moonlitNightAmbient.r * ambientMoonTint.r,
+            moonlitNightAmbient.g * ambientMoonTint.g,
+            moonlitNightAmbient.b * ambientMoonTint.b,
+            1.0f);
+        float weatherNightAmbientScale = GetNightWeatherAmbientScale();
+        Color weatherMoonlessAmbient = moonlessNightAmbient * weatherNightAmbientScale;
+        Color weatherMoonlitAmbientColor = moonlitAmbientColor * weatherNightAmbientScale;
+        weatherMoonlessAmbient.a = 1.0f;
+        weatherMoonlitAmbientColor.a = 1.0f;
+
+        playerAmbientLight.ExteriorNightAmbientLight = Color.Lerp(weatherMoonlessAmbient, weatherMoonlitAmbientColor, currentMoonAmbientStrength);
+
+        if (skyboxMat != null) {
+            Color cloudMoonTint = Color.Lerp(Color.white, currentMoonLightTint, 0.9f);
+            cloudMoonTint.a = 1.0f;
+            skyboxMat.SetColor("_MoonCloudColor", cloudMoonTint);
+        }
+
         playerAmbientLight.UpdateAmbientLight();
     }
     #endregion
@@ -619,6 +649,56 @@ public void Update()
             color.b = 0.1607843f;
         }
         return color;
+    }
+
+    private void UpdateExteriorDaylightTint(float minuteOfDay, float dawnMinute, float duskMinute) {
+        if (dfSunlight == null || playerAmbientLight == null) {
+            return;
+        }
+
+        float hourOfDay = minuteOfDay / 60f;
+        Color timeOfDaySunColor = EvaluateSunColor(hourOfDay);
+        float dawnWarmth = 1f - Mathf.Clamp01(Mathf.Abs(minuteOfDay - dawnMinute) / 180f);
+        float duskWarmth = 1f - Mathf.Clamp01(Mathf.Abs(minuteOfDay - duskMinute) / 180f);
+        float horizonWarmth = Mathf.SmoothStep(0f, 1f, Mathf.Max(dawnWarmth, duskWarmth));
+        Color daylightTint = NormalizeLightTint(timeOfDaySunColor, 0.9f);
+
+        dfSunlight.color = Color.Lerp(baseSunlightColor, daylightTint, horizonWarmth);
+
+        Color ambientDayTint = NormalizeLightTint(Color.Lerp(timeOfDaySunColor, fogColor, 0.35f), 0.8f);
+        Color tintedNoonAmbient = MultiplyColor(baseExteriorNoonAmbient, Color.Lerp(Color.white, ambientDayTint, horizonWarmth));
+        tintedNoonAmbient.a = 1.0f;
+        playerAmbientLight.ExteriorNoonAmbientLight = tintedNoonAmbient;
+    }
+
+    private Color EvaluateSunColor(float hourOfDay) {
+        int lowerHour = Mathf.FloorToInt(hourOfDay) % 24;
+        if (lowerHour < 0) {
+            lowerHour += 24;
+        }
+
+        int upperHour = (lowerHour + 1) % 24;
+        float lerpValue = hourOfDay - Mathf.Floor(hourOfDay);
+        return Color.Lerp(getSunColor(lowerHour), getSunColor(upperHour), lerpValue);
+    }
+
+    private float GetNightWeatherAmbientScale() {
+        switch (currentWeather) {
+            case WeatherType.Cloudy:
+                return 0.55f;
+            case WeatherType.Overcast:
+                return 0.30f;
+            case WeatherType.Fog:
+                return 0.20f;
+            case WeatherType.Rain:
+                return 0.12f;
+            case WeatherType.Thunder:
+                return 0.08f;
+            case WeatherType.Snow:
+                return 0.35f;
+            default:
+                return 1.0f;
+        }
     }
     #endregion
 
@@ -907,7 +987,7 @@ public void Update()
 
         UpdateShaderOrbitParameters(masserXAngle, masserYAngle, masserZAngle, orbitSpeed, masserOrbitOffset,
                                     secundaXAngle, secundaYAngle, secundaZAngle, orbitSpeed, secundaOrbitOffset);
-        currentMoonAmbientStrength = CalculateMoonAmbientStrength(
+        UpdateMoonLightingState(
             interpolatedMasserX,
             new Vector3(masserXAngle, masserYAngle, masserZAngle),
             orbitSpeed,
@@ -918,7 +998,7 @@ public void Update()
             secundaOrbitOffset);
     }
 
-    private float CalculateMoonAmbientStrength(float masserPhaseAngle, Vector3 masserOrbitAngles, float masserOrbitSpeedValue, float masserOrbitOffset,
+    private void UpdateMoonLightingState(float masserPhaseAngle, Vector3 masserOrbitAngles, float masserOrbitSpeedValue, float masserOrbitOffset,
         float secundaPhaseAngle, Vector3 secundaOrbitAngles, float secundaOrbitSpeedValue, float secundaOrbitOffset) {
         float secondsToday = worldTime.Now.Hour * 3600f + worldTime.Now.Minute * 60f + worldTime.Now.Second;
         float masserPhaseStrength = Mathf.Pow((Mathf.Cos(Mathf.Deg2Rad * masserPhaseAngle) + 1f) * 0.5f, 2f);
@@ -930,7 +1010,43 @@ public void Update()
         float masserAmbient = Mathf.Max(0f, masserPosition.y) * masserPhaseStrength;
         float secundaAmbient = Mathf.Max(0f, secundaPosition.y) * secundaPhaseStrength;
 
-        return Mathf.Clamp01(masserAmbient + secundaAmbient);
+        currentMoonAmbientStrength = Mathf.Clamp01(masserAmbient + secundaAmbient);
+        currentMoonLightTint = CalculateMoonLightTint(masserAmbient, secundaAmbient);
+    }
+
+    private Color CalculateMoonLightTint(float masserWeight, float secundaWeight) {
+        if (skyboxMat == null) {
+            return Color.white;
+        }
+
+        float totalWeight = masserWeight + secundaWeight;
+        if (totalWeight <= 0.0001f) {
+            return Color.white;
+        }
+
+        Color masserTint = NormalizeLightTint(skyboxMat.GetColor("_MoonColor"), 0.85f);
+        Color secundaTint = NormalizeLightTint(skyboxMat.GetColor("_SecundaColor"), 0.85f);
+        Color weightedTint = ((masserTint * masserWeight) + (secundaTint * secundaWeight)) / totalWeight;
+        weightedTint.a = 1.0f;
+        return weightedTint;
+    }
+
+    private Color NormalizeLightTint(Color lightColor, float tintStrength) {
+        float maxChannel = Mathf.Max(lightColor.r, Mathf.Max(lightColor.g, lightColor.b));
+        if (maxChannel <= 0.0001f) {
+            return Color.white;
+        }
+
+        Color normalizedTint = new Color(lightColor.r / maxChannel, lightColor.g / maxChannel, lightColor.b / maxChannel, 1.0f);
+        return Color.Lerp(Color.white, normalizedTint, tintStrength);
+    }
+
+    private Color MultiplyColor(Color baseColor, Color tint) {
+        return new Color(
+            baseColor.r * tint.r,
+            baseColor.g * tint.g,
+            baseColor.b * tint.b,
+            baseColor.a);
     }
 
     private Vector3 GetMoonOrbitPosition(Vector3 orbitAngles, Vector2 majorMinorAxis, float orbitAngle, float orbitOffset) {
