@@ -56,6 +56,8 @@
         [KeywordEnum(TIDAL_LOCK, LOCAL_ROTATE, WORLD_ROTATE)] _MoonSpinOption ("Moon Spin Option", float) = 1
         _MoonTidalAngle("Moon Tidal Lock Angle (XYZ)", vector) = (0, 0, 0, 0)
         _MoonSpinSpeed("Moon Spin Speed (XYZ)", vector) = (0, 0, 0, 0)
+
+        _WorldTime ("World Time", Float) = 0.0
     }
     SubShader
     {
@@ -108,6 +110,7 @@
             uniform float _MoonOrbitSpeed, _MoonOrbitOffset, _MoonSemiMajAxis, _MoonSemiMinAxis;
             uniform float3 _MoonSpinSpeed, _MoonTidalAngle;
             uniform float3 _MoonPhase;
+            uniform float _WorldTime;
 
             struct appdata
             {
@@ -402,7 +405,7 @@
                 col.rgb = lerp(col.rgb, cloudColor, clouds);
 
     //Moon
-                float orbitAngle = _Time.y * _MoonOrbitSpeed;
+                float orbitAngle = _WorldTime * _MoonOrbitSpeed;
             
                 //we also need to grab the half radius of the ellipse at the major and minor Axis
                 //these are used in the ellipse equation.

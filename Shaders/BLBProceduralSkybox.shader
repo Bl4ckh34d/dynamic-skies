@@ -109,6 +109,8 @@
         [KeywordEnum(TIDAL_LOCK, LOCAL_ROTATE, WORLD_ROTATE)] _SecundaSpinOption ("Secunda Spin Option", float) = 0
         _SecundaTidalAngle("Secunda Tidal Lock Angle (XYZ)", vector) = (0, 0, 0, 0)
         _SecundaSpinSpeed("Secunda Spin Speed (XYZ)", vector) = (0, 0, 0, 0)
+
+        _WorldTime ("World Time", Float) = 0.0
     }
     SubShader
     {
@@ -202,6 +204,7 @@
             uniform float _SecundaOrbitSpeed, _SecundaOrbitOffset, _SecundaSemiMajAxis, _SecundaSemiMinAxis;
             uniform float3 _SecundaSpinSpeed, _SecundaTidalAngle;
             uniform float3 _SecundaPhase;
+            uniform float _WorldTime;
 
             struct appdata
             {
@@ -451,8 +454,8 @@
 
                 //Get the moon positions
                 //Moon
-                float orbitAngle = _Time.y * _MoonOrbitSpeed;
-                float SecundaOrbitAngle = _Time.y * _SecundaOrbitSpeed;
+                float orbitAngle = _WorldTime * _MoonOrbitSpeed;
+                float SecundaOrbitAngle = _WorldTime * _SecundaOrbitSpeed;
             
                 //we also need to grab the half radius of the ellipse at the major and minor Axis
                 //these are used in the ellipse equation.
